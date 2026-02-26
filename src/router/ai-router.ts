@@ -50,26 +50,36 @@ const CAPABILITY_DESCRIPTIONS: Record<string, string> = {
     "SOTA coding and agents. Best for software engineering, tool use, long agent sessions. ~$1/hr.",
 };
 
-const ROUTING_SYSTEM_PROMPT = (() => {
+function buildRoutingPrompt(previousModel: string | null): string {
   const lines: string[] = [
-    "You are a routing agent. Select the single best model for the LATEST user message from the conversation. Consider cost vs. capability — prefer cheaper models when they suffice.",
+    "You are a routing agent. Select ONE model for the LATEST user message.",
     "",
-    "Available models:",
+    "Context:",
+    previousModel
+      ? `- Previous model used: ${previousModel}`
+      : "- This is the first turn (no previous model).",
+    "",
+    "Available models (cheapest first):",
   ];
-  for (const m of OPENROUTER_MODELS) {
-    if (m.id === "auto") continue;
+  const sorted = [...OPENROUTER_MODELS]
+    .filter((m) => m.id !== "auto")
+    .sort((a, b) => a.inputPrice - b.inputPrice);
+  for (const m of sorted) {
     const desc = CAPABILITY_DESCRIPTIONS[m.id] ?? "General purpose.";
-    const cost = `$${m.inputPrice.toFixed(2)}/$${m.outputPrice.toFixed(2)} per 1M tokens (input/output)`;
+    const cost = `$${m.inputPrice.toFixed(2)}/$${m.outputPrice.toFixed(2)} per 1M tokens`;
     lines.push(`- ${m.id} — ${desc} — ${cost}`);
   }
   lines.push(
     "",
     "Instructions:",
-    "1. Focus ONLY on the LATEST user message. The conversation history is provided for context only — do not let prior task complexity bias your decision.",
-    "2. Return ONLY the model ID, nothing else — no explanation, no punctuation, no quotes.",
+    "1. From the conversation, infer whether the PREVIOUS turn succeeded (good assistant response) or struggled (errors, user corrections, confusion).",
+    "2. ESCALATE to a more capable model if the previous model struggled or the new task is clearly harder.",
+    "3. DOWNGRADE to a cheaper model if the previous turn went well and the new task is simple.",
+    "4. Default to the cheapest model that fits. Use expensive models only when needed.",
+    "5. Return ONLY the model ID, nothing else.",
   );
   return lines.join("\n");
-})();
+}
 
 const turnCache = new Map<string, TurnCacheEntry>();
 
@@ -84,6 +94,12 @@ function computeCacheKey(messages: unknown[]): string {
   const slice = lastUserIdx >= 0 ? messages.slice(0, lastUserIdx + 1) : messages;
   const json = JSON.stringify(slice);
   return createHash("sha256").update(json).digest("hex");
+}
+
+/** Key for previous turn (messages before last assistant + last user). */
+function computePreviousTurnKey(messages: unknown[]): string | null {
+  if (messages.length < 2) return null;
+  return computeCacheKey(messages.slice(0, -2));
 }
 
 export class RoutingError extends Error {
@@ -105,10 +121,18 @@ export async function routeWithAI(
     return entry.modelId;
   }
 
+  const previousTurnKey = computePreviousTurnKey(messages);
+  const previousModel =
+    previousTurnKey && turnCache.has(previousTurnKey)
+      ? turnCache.get(previousTurnKey)!.modelId
+      : null;
+
   const routingMessages = [...messages];
   while (JSON.stringify(routingMessages).length > config.promptTruncationChars) {
     routingMessages.shift();
   }
+
+  const systemPrompt = buildRoutingPrompt(previousModel);
 
   let response: Response;
   try {
@@ -124,7 +148,7 @@ export async function routeWithAI(
         body: JSON.stringify({
           model: config.model,
           messages: [
-            { role: "system", content: ROUTING_SYSTEM_PROMPT },
+            { role: "system", content: systemPrompt },
             ...routingMessages,
           ],
           temperature: config.temperature,
