@@ -9,11 +9,15 @@ Set the `OPENROUTER_API_KEY` environment variable.
 ## Install
 
 ```bash
-openclaw plugins install clawd-router
+curl -fsSL https://cdn.jsdelivr.net/npm/clawd-router/scripts/install.sh | bash
+openclaw gateway restart
 ```
+
+This installs the plugin and adds it to the allowlist so it enables immediately. Set `OPENROUTER_API_KEY` and run `openclaw models set clawd-router/auto`.
 
 ## Usage
 
 ```bash
 openclaw models set clawd-router/auto
+openclaw gateway restart
 ```
