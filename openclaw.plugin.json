@@ -1,0 +1,1 @@
+{"id":"clawd-router","name":"clawd Router","description":"Smart LLM router — auto-routes requests to the best OpenRouter model","configSchema":{"type":"object","properties":{"routing":{"type":"object","description":"Override default routing configuration"}}}}
