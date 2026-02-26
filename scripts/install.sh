@@ -43,6 +43,33 @@ try {
     config.plugins.entries['clawd-router'].enabled = true;
     console.log('  Enabled clawd-router');
   }
+  // Add clawd-router to agents.defaults.models allowlist (for models list / picker)
+  if (!config.agents) config.agents = {};
+  if (!config.agents.defaults) config.agents.defaults = {};
+  if (!config.agents.defaults.models || typeof config.agents.defaults.models !== 'object') {
+    config.agents.defaults.models = {};
+  }
+  const models = config.agents.defaults.models;
+  const entries = {
+    'clawd-router/auto': { alias: 'auto' },
+    'clawd-router/sonnet': { alias: 'sonnet' },
+    'clawd-router/opus': { alias: 'opus' },
+    'clawd-router/haiku': { alias: 'haiku' },
+    'clawd-router/gemini': { alias: 'gemini' },
+    'clawd-router/flash': { alias: 'flash' },
+    'clawd-router/gpt': { alias: 'gpt' },
+    'clawd-router/mini': { alias: 'mini' },
+    'clawd-router/deepseek': { alias: 'deepseek' },
+    'clawd-router/r1': { alias: 'r1' },
+  };
+  let modelsChanged = false;
+  for (const [id, entry] of Object.entries(entries)) {
+    if (!models[id] || models[id].alias !== entry.alias) {
+      models[id] = entry;
+      modelsChanged = true;
+    }
+  }
+  if (modelsChanged) console.log('  Added clawd-router models to allowlist');
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 } catch (e) {
   console.error('  Error:', e.message);

@@ -29,6 +29,85 @@ function isGatewayMode(): boolean {
   return process.argv.includes("gateway");
 }
 
+/** Resolve OpenRouter API key from OpenClaw config or auth-profiles (reuse key if already configured). */
+function resolveOpenRouterApiKey(): string {
+  const fromEnv = process.env.OPENROUTER_API_KEY?.trim();
+  if (fromEnv) return fromEnv;
+
+  const stateDir =
+    process.env.OPENCLAW_STATE_DIR ?? join(homedir(), ".openclaw");
+  const configPath =
+    process.env.OPENCLAW_CONFIG_PATH ?? join(stateDir, "openclaw.json");
+
+  if (existsSync(configPath)) {
+    try {
+      const content = readTextFileSync(configPath).trim();
+      if (content) {
+        const config = JSON.parse(content) as Record<string, unknown>;
+
+        // config.env.OPENROUTER_API_KEY (common in OpenClaw)
+        const env = config.env as Record<string, unknown> | undefined;
+        if (env) {
+          const key = env.OPENROUTER_API_KEY;
+          if (typeof key === "string" && key.trim()) return key.trim();
+          const vars = env.vars as Record<string, unknown> | undefined;
+          const vKey = vars?.OPENROUTER_API_KEY;
+          if (typeof vKey === "string") {
+            const v = vKey.trim();
+            if (v) return v;
+          }
+        }
+
+        // config.credentials.openrouter.apiKey (alternative layout)
+        const creds = config.credentials as
+          | Record<string, Record<string, unknown>>
+          | undefined;
+        if (creds?.openrouter?.apiKey && typeof creds.openrouter.apiKey === "string") {
+          const k = creds.openrouter.apiKey.trim();
+          if (k) return k;
+        }
+
+        // config.models.providers.openrouter.apiKey (if raw key stored)
+        const providers = (config.models as Record<string, unknown>)?.["providers"] as
+          | Record<string, Record<string, unknown>>
+          | undefined;
+        const openrouter = providers?.["openrouter"];
+        if (openrouter?.apiKey && typeof openrouter.apiKey === "string") {
+          const k = openrouter.apiKey.trim();
+          if (k && (k.startsWith("sk-or-") || k.length > 20)) return k;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // auth-profiles.json (when user ran: openclaw onboard --token-provider openrouter)
+  const agentIds = ["main", "default"];
+  for (const agentId of agentIds) {
+    const authPath = join(stateDir, "agents", agentId, "agent", "auth-profiles.json");
+    if (!existsSync(authPath)) continue;
+    try {
+      const content = readTextFileSync(authPath).trim();
+      if (!content) continue;
+      const store = JSON.parse(content) as {
+        version?: number;
+        profiles?: Record<string, { type?: string; provider?: string; key?: string }>;
+      };
+      const profiles = store?.profiles ?? {};
+      for (const entry of Object.values(profiles)) {
+        if (entry?.provider === "openrouter" && entry?.key?.trim()) {
+          return entry.key.trim();
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return "";
+}
+
 function injectModelsConfig(logger: { info: (msg: string) => void }): void {
   const configDir = join(homedir(), ".openclaw");
   const configPath = join(configDir, "openclaw.json");
@@ -138,6 +217,31 @@ function injectModelsConfig(logger: { info: (msg: string) => void }): void {
     needsWrite = true;
   }
 
+  // Add clawd-router to agents.defaults.models allowlist (required for models list / picker)
+  if (!defaults.models || typeof defaults.models !== "object") {
+    defaults.models = {};
+    needsWrite = true;
+  }
+  const modelsAllowlist = defaults.models as Record<string, { alias?: string }>;
+  const clawdRouterEntries: Record<string, { alias: string }> = {
+    "clawd-router/auto": { alias: "auto" },
+    "clawd-router/sonnet": { alias: "sonnet" },
+    "clawd-router/opus": { alias: "opus" },
+    "clawd-router/haiku": { alias: "haiku" },
+    "clawd-router/gemini": { alias: "gemini" },
+    "clawd-router/flash": { alias: "flash" },
+    "clawd-router/gpt": { alias: "gpt" },
+    "clawd-router/mini": { alias: "mini" },
+    "clawd-router/deepseek": { alias: "deepseek" },
+    "clawd-router/r1": { alias: "r1" },
+  };
+  for (const [modelId, entry] of Object.entries(clawdRouterEntries)) {
+    if (!modelsAllowlist[modelId] || modelsAllowlist[modelId].alias !== entry.alias) {
+      modelsAllowlist[modelId] = entry;
+      needsWrite = true;
+    }
+  }
+
   if (needsWrite) {
     const tmpPath = `${configPath}.tmp.${process.pid}`;
     try {
@@ -183,7 +287,16 @@ async function register(api: OpenClawPluginApi): Promise<void> {
     return;
   }
 
-  startProxy({ port: getProxyPort() || 8403 })
+  const apiKey = resolveOpenRouterApiKey();
+  if (!apiKey) {
+    api.logger.info(
+      "[clawd-router] No OpenRouter key found. Set OPENROUTER_API_KEY or add it to openclaw.json env.OPENROUTER_API_KEY",
+    );
+  }
+  startProxy({
+    port: getProxyPort() || 8403,
+    openRouterApiKey: apiKey || undefined,
+  })
     .then((handle) => {
       activeProxyHandle = handle;
       setActiveProxyPort(getProxyPort());
