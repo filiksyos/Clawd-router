@@ -10,29 +10,44 @@ import { OPENROUTER_MODELS } from "../models.js";
 import { fetchWithRetry } from "../retry.js";
 import type { AIRoutingConfig, TurnCacheEntry } from "./types.js";
 
+/**
+ * Capability descriptions for OpenClaw routing.
+ * Optimized for: coding, browsing, tool use, agent tasks, long context.
+ * Research: OpenClaw best models 2025–2026, OpenRouter availability.
+ */
 const CAPABILITY_DESCRIPTIONS: Record<string, string> = {
-  "google/gemini-2.5-flash-lite-preview":
+  // Google Gemini
+  "google/gemini-2.5-flash-lite":
     "Ultra-cheap and fast. Best for simple questions, greetings, translations, factual lookups.",
   "google/gemini-2.5-flash":
     "Balanced speed and capability. Best for general tasks, summaries, moderate coding, Q&A.",
   "google/gemini-2.5-pro":
     "High capability with reasoning. Best for complex analysis, hard coding problems, architecture design.",
-  "anthropic/claude-sonnet-4-5":
-    "Excellent reasoning and coding. Best for nuanced tasks, complex code, multi-step reasoning.",
-  "anthropic/claude-opus-4-5":
-    "Most capable Anthropic model. Best for the hardest tasks requiring deep reasoning.",
-  "anthropic/claude-haiku-4-5":
-    "Fast and cheap Anthropic model. Best for simple tasks where Anthropic style is preferred.",
-  "openai/gpt-4o":
-    "Strong general-purpose model with vision. Best for diverse tasks, image understanding.",
-  "openai/gpt-4o-mini":
-    "Cheap OpenAI model. Best for simple tasks where OpenAI style is preferred.",
-  "openai/o3-mini":
+  // Anthropic Claude
+  "anthropic/claude-sonnet-4-6":
+    "Best all-around for OpenClaw. Excellent reasoning, coding, tool use. Recommended daily driver.",
+  "anthropic/claude-opus-4-6":
+    "Most capable Anthropic model. Best for hardest agent tasks, long-context coding, deep reasoning.",
+  // OpenAI
+  "openai/gpt-5.2":
+    "OpenAI frontier model with adaptive reasoning. Best for math, coding, tool calling, vision.",
+  "openai/gpt-5-mini":
+    "Cheap and fast OpenAI. Best for simple tasks, quick lookups, light coding.",
+  "openai/o4-mini":
     "OpenAI reasoning model. Best for math, logic, formal proofs, algorithmic problems.",
-  "deepseek/deepseek-chat":
+  // DeepSeek
+  "deepseek/deepseek-v3.2":
     "Very cheap and capable. Best for coding and general tasks on a tight budget.",
+  "deepseek/deepseek-v3.2-speciale":
+    "DeepSeek reasoning variant. Best for math, logic, agentic tasks on a budget.",
   "deepseek/deepseek-r1":
     "DeepSeek reasoning model. Best for math, logic, and reasoning tasks on a budget.",
+  // Moonshot Kimi
+  "moonshotai/kimi-k2.5":
+    "Top free-tier choice. Multimodal, strong agentic tool use, visual coding. Close to Claude Sonnet quality.",
+  // MiniMax
+  "minimax/minimax-m2.5":
+    "SOTA coding and agents. Best for software engineering, tool use, long agent sessions. ~$1/hr.",
 };
 
 const ROUTING_SYSTEM_PROMPT = (() => {
