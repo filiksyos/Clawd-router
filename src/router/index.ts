@@ -33,6 +33,7 @@ export async function route(
 }
 
 export { DEFAULT_ROUTING_CONFIG } from "./config.js";
+export { calculateModelCost } from "./selector.js";
 export type { RoutingDecision, RoutingConfig } from "./types.js";
 export type { ModelPricing } from "./selector.js";
 export { RoutingError } from "./ai-router.js";

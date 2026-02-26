@@ -8,13 +8,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import type { ModelPricing } from "./router/selector.js";
-import { route, getFallbackChainFiltered, DEFAULT_ROUTING_CONFIG } from "./router/index.js";
-import type { Tier } from "./router/types.js";
+import { route, RoutingError, DEFAULT_ROUTING_CONFIG } from "./router/index.js";
 import {
   OPENCLAW_MODELS,
   OPENROUTER_MODELS,
   resolveModelAlias,
-  getModelContextWindow,
 } from "./models.js";
 import { VERSION } from "./version.js";
 import { fetchWithRetry } from "./retry.js";
@@ -71,28 +69,6 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 /**
- * Extract prompt and system prompt from messages.
- */
-function extractPrompts(messages: unknown[]): { prompt: string; systemPrompt?: string } {
-  let prompt = "";
-  let systemPrompt: string | undefined;
-
-  for (const msg of messages) {
-    const m = msg as { role?: string; content?: string };
-    const role = (m?.role ?? "").toLowerCase();
-    const content = typeof m?.content === "string" ? m.content : "";
-
-    if (role === "system") {
-      systemPrompt = (systemPrompt ? `${systemPrompt}\n${content}` : content).trim() || undefined;
-    } else {
-      prompt = (prompt ? `${prompt}\n${content}` : content).trim() || prompt;
-    }
-  }
-
-  return { prompt, systemPrompt };
-}
-
-/**
  * Forward a chat completions request to OpenRouter with a specific model.
  */
 async function forwardToOpenRouter(
@@ -126,22 +102,23 @@ async function forwardToOpenRouter(
 /**
  * Choose target model: use routing for "auto"/"router", otherwise resolve alias.
  */
-function selectTargetModel(
+async function selectTargetModel(
   requestedModel: string,
-  prompt: string,
-  systemPrompt: string | undefined,
+  messages: unknown[],
   maxOutputTokens: number,
-  routingProfile?: "free" | "eco" | "auto" | "premium",
-): { model: string; tier?: Tier } {
+  apiKey: string,
+): Promise<{ model: string }> {
   const resolved = resolveModelAlias(requestedModel).toLowerCase();
 
   if (resolved === "auto" || resolved === "router") {
-    const decision = route(prompt, systemPrompt, maxOutputTokens, {
-      config: DEFAULT_ROUTING_CONFIG,
+    const decision = await route(
+      messages,
+      apiKey,
+      DEFAULT_ROUTING_CONFIG,
       modelPricing,
-      routingProfile: routingProfile ?? "auto",
-    });
-    return { model: decision.model, tier: decision.tier };
+      maxOutputTokens,
+    );
+    return { model: decision.model };
   }
 
   return { model: resolveModelAlias(requestedModel) };
@@ -179,85 +156,63 @@ async function handleChatCompletions(
   const maxOutputTokens = Number(body.max_tokens ?? 4096) || 4096;
   const stream = Boolean(body.stream);
 
-  const { prompt, systemPrompt } = extractPrompts(messages);
-
-  const { model: primaryModel, tier } = selectTargetModel(
-    requestedModel,
-    prompt,
-    systemPrompt,
-    maxOutputTokens,
-  );
-
-  const fullText = `${systemPrompt ?? ""} ${prompt}`;
-  const estimatedInputTokens = Math.ceil(fullText.length / 4);
-  const estimatedTotalTokens = estimatedInputTokens + maxOutputTokens;
-
-  const tierConfigs = DEFAULT_ROUTING_CONFIG.tiers;
-  const fallbackChain =
-    tier != null
-      ? getFallbackChainFiltered(
-          tier,
-          tierConfigs,
-          estimatedTotalTokens,
-          getModelContextWindow,
-        )
-      : [primaryModel];
-
-  const modelsToTry = fallbackChain.includes(primaryModel)
-    ? fallbackChain
-    : [primaryModel, ...fallbackChain];
-
-  let lastError: Error | null = null;
-  let lastStatus = 500;
-
-  for (const model of modelsToTry) {
-    try {
-      const response = await forwardToOpenRouter(body, model, apiKey, stream);
-
-      if (!response.ok) {
-        lastStatus = response.status;
-        const text = await response.text();
-        let errBody: unknown;
-        try {
-          errBody = JSON.parse(text);
-        } catch {
-          errBody = { error: { message: text } };
-        }
-        lastError = new Error(
-          `OpenRouter error (${response.status}): ${(errBody as { error?: { message?: string } })?.error?.message ?? text}`,
-        );
-        const retryable = [429, 502, 503, 504].includes(response.status);
-        if (!retryable) {
-          res.writeHead(response.status, { "Content-Type": "application/json" });
-          res.end(text || JSON.stringify(errBody));
-          return;
-        }
-        continue;
-      }
-
-      res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
-      if (stream && response.body) {
-        const nodeStream = Readable.fromWeb(response.body as import("node:stream/web").ReadableStream);
-        nodeStream.pipe(res);
-      } else {
-        const text = await response.text();
-        res.end(text);
-      }
+  let primaryModel: string;
+  try {
+    const result = await selectTargetModel(
+      requestedModel,
+      messages,
+      maxOutputTokens,
+      apiKey,
+    );
+    primaryModel = result.model;
+  } catch (err) {
+    if (err instanceof RoutingError) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: { message: err.message, type: "routing_error" },
+        }),
+      );
       return;
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
     }
+    throw err;
   }
 
-  res.writeHead(lastStatus, { "Content-Type": "application/json" });
-  res.end(
-    JSON.stringify({
-      error: {
-        message: lastError?.message ?? "All fallback models failed",
-        type: "internal_error",
-      },
-    }),
-  );
+  try {
+    const response = await forwardToOpenRouter(body, primaryModel, apiKey, stream);
+
+    if (!response.ok) {
+      const text = await response.text();
+      let errBody: unknown;
+      try {
+        errBody = JSON.parse(text);
+      } catch {
+        errBody = { error: { message: text } };
+      }
+      res.writeHead(response.status, { "Content-Type": "application/json" });
+      res.end(text || JSON.stringify(errBody));
+      return;
+    }
+
+    res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
+    if (stream && response.body) {
+      const nodeStream = Readable.fromWeb(response.body as import("node:stream/web").ReadableStream);
+      nodeStream.pipe(res);
+    } else {
+      const text = await response.text();
+      res.end(text);
+    }
+  } catch (err) {
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        error: {
+          message: err instanceof Error ? err.message : String(err),
+          type: "internal_error",
+        },
+      }),
+    );
+  }
 }
 
 /**

@@ -331,8 +331,6 @@ export {
 export {
   route,
   DEFAULT_ROUTING_CONFIG,
-  getFallbackChain,
-  getFallbackChainFiltered,
   calculateModelCost,
 } from "./router/index.js";
-export type { RoutingDecision, RoutingConfig, Tier } from "./router/index.js";
+export type { RoutingDecision, RoutingConfig } from "./router/index.js";
