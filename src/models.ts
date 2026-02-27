@@ -19,6 +19,7 @@ type OpenRouterModel = {
   maxOutput: number;
   reasoning?: boolean;
   vision?: boolean;
+  agentic?: boolean;
 };
 
 export const MODEL_ALIASES: Record<string, string> = {
@@ -34,6 +35,12 @@ export const MODEL_ALIASES: Record<string, string> = {
   r1: "deepseek/deepseek-r1",
   "auto-router": "auto",
   router: "auto",
+  kimi: "moonshotai/kimi-k2.5",
+  "grok-fast": "x-ai/grok-4.1-fast-non-reasoning",
+  "grok-code": "x-ai/grok-code-fast-1",
+  grok: "x-ai/grok-3",
+  minimax: "minimax/minimax-m2.5",
+  eco: "eco",
 };
 
 /**
@@ -59,6 +66,14 @@ export const OPENROUTER_MODELS: OpenRouterModel[] = [
   {
     id: "auto",
     name: "Auto (Smart Router - Balanced)",
+    inputPrice: 0,
+    outputPrice: 0,
+    contextWindow: 1_050_000,
+    maxOutput: 128_000,
+  },
+  {
+    id: "eco",
+    name: "Eco (Smart Router - Cost Optimized)",
     inputPrice: 0,
     outputPrice: 0,
     contextWindow: 1_050_000,
@@ -170,6 +185,78 @@ export const OPENROUTER_MODELS: OpenRouterModel[] = [
     maxOutput: 8_192,
     reasoning: true,
   },
+  {
+    id: "moonshotai/kimi-k2.5",
+    name: "Kimi K2.5",
+    inputPrice: 0.6,
+    outputPrice: 3.0,
+    contextWindow: 262_144,
+    maxOutput: 8_192,
+    reasoning: true,
+    vision: true,
+    agentic: true,
+  },
+  {
+    id: "x-ai/grok-code-fast-1",
+    name: "Grok Code Fast",
+    inputPrice: 0.2,
+    outputPrice: 1.5,
+    contextWindow: 131_072,
+    maxOutput: 16_384,
+    agentic: true,
+  },
+  {
+    id: "x-ai/grok-4.1-fast-non-reasoning",
+    name: "Grok 4.1 Fast",
+    inputPrice: 0.2,
+    outputPrice: 0.5,
+    contextWindow: 131_072,
+    maxOutput: 16_384,
+  },
+  {
+    id: "x-ai/grok-4.1-fast-reasoning",
+    name: "Grok 4.1 Fast Reasoning",
+    inputPrice: 0.2,
+    outputPrice: 0.5,
+    contextWindow: 131_072,
+    maxOutput: 16_384,
+    reasoning: true,
+  },
+  {
+    id: "x-ai/grok-4-0709",
+    name: "Grok 4",
+    inputPrice: 0.2,
+    outputPrice: 1.5,
+    contextWindow: 131_072,
+    maxOutput: 16_384,
+    reasoning: true,
+  },
+  {
+    id: "x-ai/grok-3",
+    name: "Grok 3",
+    inputPrice: 3.0,
+    outputPrice: 15.0,
+    contextWindow: 131_072,
+    maxOutput: 16_384,
+    reasoning: true,
+  },
+  {
+    id: "x-ai/grok-3-mini",
+    name: "Grok 3 Mini",
+    inputPrice: 0.3,
+    outputPrice: 0.5,
+    contextWindow: 131_072,
+    maxOutput: 16_384,
+  },
+  {
+    id: "minimax/minimax-m2.5",
+    name: "MiniMax M2.5",
+    inputPrice: 0.3,
+    outputPrice: 1.2,
+    contextWindow: 204_800,
+    maxOutput: 16_384,
+    reasoning: true,
+  },
 ];
 
 function toOpenClawModel(m: OpenRouterModel): ModelDefinitionConfig {
@@ -190,10 +277,13 @@ function toOpenClawModel(m: OpenRouterModel): ModelDefinitionConfig {
   };
 }
 
+const REAL_MODEL_IDS = new Set(OPENROUTER_MODELS.map((m) => m.id));
+
 const ALIAS_MODELS: ModelDefinitionConfig[] = Object.entries(MODEL_ALIASES)
+  .filter(([alias]) => !REAL_MODEL_IDS.has(alias))
   .map(([alias, targetId]) => {
     const target = OPENROUTER_MODELS.find((m) => m.id === targetId);
-    if (!target) return null;
+    if (!target || alias === targetId) return null;
     return toOpenClawModel({ ...target, id: alias, name: `${alias} → ${target.name}` });
   })
   .filter((m): m is ModelDefinitionConfig => m !== null);

@@ -1041,20 +1041,39 @@ export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
   // Auto (balanced) tier configs - Clawd-router OpenRouter smart routing
   tiers: {
     SIMPLE: {
+      primary: "moonshotai/kimi-k2.5",
+      fallback: ["google/gemini-2.5-flash-lite-preview", "deepseek/deepseek-chat"],
+    },
+    MEDIUM: {
+      primary: "x-ai/grok-code-fast-1",
+      fallback: ["google/gemini-2.5-flash-lite-preview", "deepseek/deepseek-chat", "x-ai/grok-4.1-fast-non-reasoning"],
+    },
+    COMPLEX: {
+      primary: "google/gemini-2.5-pro",
+      fallback: ["google/gemini-2.5-flash-lite-preview", "anthropic/claude-sonnet-4-5", "openai/gpt-4o", "deepseek/deepseek-chat"],
+    },
+    REASONING: {
+      primary: "x-ai/grok-4.1-fast-reasoning",
+      fallback: ["deepseek/deepseek-r1", "openai/o3-mini"],
+    },
+  },
+
+  ecoTiers: {
+    SIMPLE: {
       primary: "google/gemini-2.5-flash-lite-preview",
       fallback: ["deepseek/deepseek-chat", "openai/gpt-4o-mini"],
     },
     MEDIUM: {
-      primary: "google/gemini-2.5-flash",
+      primary: "google/gemini-2.5-flash-lite-preview",
       fallback: ["deepseek/deepseek-chat", "openai/gpt-4o-mini"],
     },
     COMPLEX: {
-      primary: "google/gemini-2.5-pro",
-      fallback: ["anthropic/claude-sonnet-4-5", "openai/gpt-4o", "deepseek/deepseek-chat"],
+      primary: "google/gemini-2.5-flash",
+      fallback: ["google/gemini-2.5-flash-lite-preview", "deepseek/deepseek-chat"],
     },
     REASONING: {
-      primary: "anthropic/claude-sonnet-4-5",
-      fallback: ["openai/o3-mini", "deepseek/deepseek-r1"],
+      primary: "deepseek/deepseek-r1",
+      fallback: ["openai/o3-mini", "x-ai/grok-4.1-fast-reasoning"],
     },
   },
 
