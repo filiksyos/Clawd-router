@@ -9,7 +9,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { Readable } from "node:stream";
 import type { ModelPricing } from "./router/selector.js";
 import { route, getFallbackChainFiltered, DEFAULT_ROUTING_CONFIG } from "./router/index.js";
-import type { Tier } from "./router/types.js";
+import type { RoutingConfig, RoutingDecision } from "./router/index.js";
 import {
   OPENCLAW_MODELS,
   OPENROUTER_MODELS,
@@ -25,10 +25,16 @@ export type ProxyOptions = {
   port?: number;
   host?: string;
   openRouterApiKey?: string;
+  routingConfig?: Partial<RoutingConfig>;
+  onReady?: (port: number) => void;
+  onError?: (error: Error) => void;
+  onRouted?: (decision: RoutingDecision) => void;
 };
 
 export type ProxyHandle = {
-  close: () => Promise<void>;
+  close(): Promise<void>;
+  baseUrl: string;
+  port: number;
 };
 
 let activePort: number = 0;
@@ -72,24 +78,45 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 /**
  * Extract prompt and system prompt from messages.
+ * System: concatenate all system messages (forward iteration).
+ * User prompt: use only the last user message (backward iteration).
  */
 function extractPrompts(messages: unknown[]): { prompt: string; systemPrompt?: string } {
-  let prompt = "";
   let systemPrompt: string | undefined;
 
   for (const msg of messages) {
-    const m = msg as { role?: string; content?: string };
+    const m = msg as { role?: string; content?: unknown };
     const role = (m?.role ?? "").toLowerCase();
-    const content = typeof m?.content === "string" ? m.content : "";
+    const content = extractContent(m?.content);
 
     if (role === "system") {
       systemPrompt = (systemPrompt ? `${systemPrompt}\n${content}` : content).trim() || undefined;
-    } else {
-      prompt = (prompt ? `${prompt}\n${content}` : content).trim() || prompt;
+    }
+  }
+
+  let prompt = "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: string; content?: unknown };
+    const role = (m?.role ?? "").toLowerCase();
+    if (role === "user") {
+      prompt = extractContent(m?.content).trim() || "";
+      break;
     }
   }
 
   return { prompt, systemPrompt };
+}
+
+function extractContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content) && content.length > 0) {
+    const part = content[0] as { type?: string; text?: string } | unknown;
+    if (part && typeof part === "object" && "type" in part && (part as { type?: string }).type === "text") {
+      return String((part as { text?: string }).text ?? "");
+    }
+    return String(part);
+  }
+  return "";
 }
 
 /**
@@ -107,6 +134,7 @@ async function forwardToOpenRouter(
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`,
     "HTTP-Referer": `clawd-router/${VERSION}`,
+    "X-Title": "clawd Router",
   };
 
   const res = await fetchWithRetry(
@@ -124,36 +152,14 @@ async function forwardToOpenRouter(
 }
 
 /**
- * Choose target model: use routing for "auto"/"router", otherwise resolve alias.
- */
-function selectTargetModel(
-  requestedModel: string,
-  prompt: string,
-  systemPrompt: string | undefined,
-  maxOutputTokens: number,
-  routingProfile?: "free" | "eco" | "auto" | "premium",
-): { model: string; tier?: Tier } {
-  const resolved = resolveModelAlias(requestedModel).toLowerCase();
-
-  if (resolved === "auto" || resolved === "router") {
-    const decision = route(prompt, systemPrompt, maxOutputTokens, {
-      config: DEFAULT_ROUTING_CONFIG,
-      modelPricing,
-      routingProfile: routingProfile ?? "auto",
-    });
-    return { model: decision.model, tier: decision.tier };
-  }
-
-  return { model: resolveModelAlias(requestedModel) };
-}
-
-/**
  * Handle POST /v1/chat/completions with routing, fallback, and streaming.
  */
 async function handleChatCompletions(
   req: IncomingMessage,
   res: ServerResponse,
   apiKey: string,
+  onRouted?: (decision: RoutingDecision) => void,
+  effectiveConfig: RoutingConfig = DEFAULT_ROUTING_CONFIG,
 ): Promise<void> {
   let body: Record<string, unknown>;
   try {
@@ -181,36 +187,56 @@ async function handleChatCompletions(
 
   const { prompt, systemPrompt } = extractPrompts(messages);
 
-  const { model: primaryModel, tier } = selectTargetModel(
-    requestedModel,
-    prompt,
-    systemPrompt,
-    maxOutputTokens,
-  );
+  const resolved = resolveModelAlias(requestedModel).toLowerCase();
+  let routingProfile: "auto" | "eco" | undefined;
+  if (resolved === "auto" || resolved === "router") {
+    routingProfile = "auto";
+  } else if (resolved === "eco") {
+    routingProfile = "eco";
+  } else {
+    routingProfile = undefined;
+  }
 
-  const fullText = `${systemPrompt ?? ""} ${prompt}`;
-  const estimatedInputTokens = Math.ceil(fullText.length / 4);
-  const estimatedTotalTokens = estimatedInputTokens + maxOutputTokens;
+  let modelsToTry: string[];
 
-  const tierConfigs = DEFAULT_ROUTING_CONFIG.tiers;
-  const fallbackChain =
-    tier != null
-      ? getFallbackChainFiltered(
-          tier,
-          tierConfigs,
-          estimatedTotalTokens,
-          getModelContextWindow,
-        )
-      : [primaryModel];
+  if (routingProfile === "auto" || routingProfile === "eco") {
+    const decision = route(prompt, systemPrompt, maxOutputTokens, {
+      config: effectiveConfig,
+      modelPricing,
+      routingProfile,
+    });
+    console.log(`[${decision.tier}|${routingProfile.toUpperCase()}] ${decision.model} | ${decision.reasoning}`);
+    onRouted?.(decision);
 
-  const modelsToTry = fallbackChain.includes(primaryModel)
-    ? fallbackChain
-    : [primaryModel, ...fallbackChain];
+    const tierConfigs =
+      routingProfile === "eco"
+        ? (effectiveConfig.ecoTiers ?? effectiveConfig.tiers)
+        : effectiveConfig.tiers;
+    const fullText = `${systemPrompt ?? ""} ${prompt}`;
+    const estimatedInputTokens = Math.ceil(fullText.length / 4);
+    const estimatedTotalTokens = estimatedInputTokens + maxOutputTokens;
+    const fallbackChain = getFallbackChainFiltered(
+      decision.tier,
+      tierConfigs,
+      estimatedTotalTokens,
+      getModelContextWindow,
+    );
+    modelsToTry = fallbackChain.includes(decision.model)
+      ? fallbackChain
+      : [decision.model, ...fallbackChain];
+  } else {
+    const primaryModel = resolveModelAlias(requestedModel);
+    modelsToTry = [primaryModel];
+  }
 
   let lastError: Error | null = null;
   let lastStatus = 500;
 
-  for (const model of modelsToTry) {
+  for (let i = 0; i < modelsToTry.length; i++) {
+    const model = modelsToTry[i];
+    if (i > 0) {
+      console.log(`[fallback] ${model} (previous model failed)`);
+    }
     try {
       const response = await forwardToOpenRouter(body, model, apiKey, stream);
 
@@ -295,10 +321,13 @@ export function startProxy(options: ProxyOptions = {}): Promise<ProxyHandle> {
   return new Promise((resolve, reject) => {
     const port = options.port ?? 0;
     const host = options.host ?? "127.0.0.1";
-    const apiKey =
-      options.openRouterApiKey ?? process.env.OPENROUTER_API_KEY ?? "";
+
+    const effectiveConfig: RoutingConfig = { ...DEFAULT_ROUTING_CONFIG, ...options.routingConfig };
 
     const server = createServer(async (req, res) => {
+      /** API key precedence: `process.env.OPENROUTER_API_KEY` (per-request, primary) or fallback to `options.openRouterApiKey` (startup/plugin config). Trimmed. */
+      const apiKey = (process.env.OPENROUTER_API_KEY ?? options.openRouterApiKey ?? "").trim();
+
       const url = req.url ?? "/";
       const method = req.method ?? "GET";
       const pathname = url.split("?")[0];
@@ -314,19 +343,19 @@ export function startProxy(options: ProxyOptions = {}): Promise<ProxyHandle> {
       }
 
       if (method === "POST" && pathname === "/v1/chat/completions") {
-        if (!apiKey.trim()) {
-          res.writeHead(401, { "Content-Type": "application/json" });
+        if (!apiKey) {
+          res.writeHead(400, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
               error: {
-                message: "OpenRouter API key required. Set OPENROUTER_API_KEY or openRouterApiKey in options.",
-                type: "authentication_error",
+                message: "OpenRouter API key required. Set OPENROUTER_API_KEY.",
+                type: "invalid_request",
               },
             }),
           );
           return;
         }
-        await handleChatCompletions(req, res, apiKey);
+        await handleChatCompletions(req, res, apiKey, options.onRouted, effectiveConfig);
         return;
       }
 
@@ -334,19 +363,25 @@ export function startProxy(options: ProxyOptions = {}): Promise<ProxyHandle> {
       res.end(JSON.stringify({ error: { message: "Not found", type: "invalid_request" } }));
     });
 
-    server.on("error", reject);
+    server.on("error", (err) => {
+      options.onError?.(err);
+      reject(err);
+    });
 
     server.listen(port, host, () => {
       const addr = server.address();
       if (addr && typeof addr === "object") {
         activePort = addr.port;
       }
+      options.onReady?.(activePort);
       resolve({
         close: () =>
           new Promise<void>((closeResolve) => {
             activePort = 0;
             server.close(() => closeResolve());
           }),
+        baseUrl: `http://${host}:${activePort}`,
+        port: activePort,
       });
     });
   });
