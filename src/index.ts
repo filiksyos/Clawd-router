@@ -234,6 +234,12 @@ function injectModelsConfig(logger: { info: (msg: string) => void }): void {
     "clawd-router/mini": { alias: "mini" },
     "clawd-router/deepseek": { alias: "deepseek" },
     "clawd-router/r1": { alias: "r1" },
+    "clawd-router/eco": { alias: "eco" },
+    "clawd-router/kimi": { alias: "kimi" },
+    "clawd-router/grok-fast": { alias: "grok-fast" },
+    "clawd-router/grok-code": { alias: "grok-code" },
+    "clawd-router/grok": { alias: "grok" },
+    "clawd-router/minimax": { alias: "minimax" },
   };
   for (const [modelId, entry] of Object.entries(clawdRouterEntries)) {
     if (!modelsAllowlist[modelId] || modelsAllowlist[modelId].alias !== entry.alias) {
